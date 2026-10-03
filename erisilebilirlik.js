@@ -39,7 +39,8 @@
       rate: 'Hız', clickRead: 'Dokunduğum yerden oku',
       clickReadHint: 'Açıkken bir paragrafa dokunun; okuma oradan başlar ve devam eder. Bu sırada bağlantılar açılmaz.',
       hoverRead: 'Üzerine gelince oku',
-      hoverReadHint: 'Açıkken fareyi bir metnin, bağlantının ya da görselin üzerinde kısa bir süre tutun; o kısım okunur. Yeni bir sayfada ilk okumadan önce sayfaya bir kez tıklamanız gerekebilir.',
+      needClick: 'Sesli okumayı başlatmak için sayfada bir kez tıklayın.',
+      hoverReadHint: 'Açıkken fareyi bir metnin, bağlantının ya da görselin üzerinde kısa bir süre tutun; o kısım okunur. Tarayıcılar her yeni sayfada ilk okumadan önce bir tıklama ister.',
       prev: 'Önceki paragraf', next: 'Sonraki paragraf', jump: 'Bölüme git', para: 'Paragraf',
       noHeadings: 'Bu sayfada başlık bulunamadı.', player: 'Sesli okuma kontrolleri',
       noSpeech: 'Tarayıcınız sesli okumayı desteklemiyor.',
@@ -59,7 +60,8 @@
       rate: 'Speed', clickRead: 'Read from where I tap',
       clickReadHint: 'While on, tap a paragraph to start reading from there. Links are not followed meanwhile.',
       hoverRead: 'Read on hover',
-      hoverReadHint: 'While on, rest the mouse on a text, link or image for a moment to hear it. On a new page you may need to click once before the first reading.',
+      needClick: 'Click once anywhere on the page to enable reading aloud.',
+      hoverReadHint: 'While on, rest the mouse on a text, link or image for a moment to hear it. Browsers require one click on each new page before the first reading.',
       prev: 'Previous paragraph', next: 'Next paragraph', jump: 'Jump to section', para: 'Paragraph',
       noHeadings: 'No headings found on this page.', player: 'Reading controls',
       noSpeech: 'Your browser does not support text to speech.',
@@ -293,6 +295,12 @@
     };
     u.onerror = function (e) {
       if (tok !== speech.token || e.error === 'interrupted' || e.error === 'canceled') return;
+      if (e.error === 'not-allowed') {
+        if (state.hoverRead && c.el) hover.pending = c.el;
+        stopSpeech();
+        showToast(T.needClick);
+        return;
+      }
       speech.i++;
       speakNext(tok);
     };
@@ -304,6 +312,7 @@
         c.el.scrollIntoView({ block: 'center', behavior: state.noanim ? 'auto' : 'smooth' });
       }
     }
+    speech.utt = u; // Chrome, referansı tutulmayan okumayı yarıda kesebiliyor
     synth.speak(u);
     syncUI();
   }
@@ -421,7 +430,27 @@
 
   /* ------------------------------------------------------------------ üzerine gelince oku */
   var canHover = !!(window.matchMedia && window.matchMedia('(hover: hover) and (pointer: fine)').matches);
-  var hover = { el: null, timer: null, lastRead: null };
+  var hover = { el: null, timer: null, lastRead: null, pending: null };
+  function pageActivated() {
+    // Tarayıcı, sayfada bir tıklama/tuş olmadan sesli okumaya izin vermez
+    return !(navigator.userActivation && !navigator.userActivation.hasBeenActive);
+  }
+  function readHoverEl(el) {
+    var text = hoverText(el);
+    if (!text) return;
+    hover.lastRead = el;
+    setChunks(chunksFromBlock(el.tagName === 'IMG' ? null : el, text));
+    speakFrom(0);
+  }
+  function onFirstGesture(e) {
+    if (!hover.pending) return;
+    var path = e.composedPath ? e.composedPath() : [];
+    if (host && path.indexOf(host) > -1) return;
+    var el = hover.pending;
+    hover.pending = null;
+    hideToast();
+    if (state.hoverRead && document.contains(el)) readHoverEl(el); // tıklama anında, izin varken oku
+  }
   function hoverTarget(t) {
     if (!t || !t.closest) return null;
     var el = t.closest(TEXT + ',a,button,img[alt],[aria-label]');
@@ -446,11 +475,12 @@
     hover.timer = setTimeout(function () {
       if (hover.el !== el) return;
       if (el === hover.lastRead && speech.active) return; // aynı öğe zaten okunuyor
-      var text = hoverText(el);
-      if (!text) return;
-      hover.lastRead = el;
-      setChunks(chunksFromBlock(el.tagName === 'IMG' ? null : el, text));
-      speakFrom(0);
+      if (!pageActivated()) {
+        hover.pending = el;
+        showToast(T.needClick);
+        return;
+      }
+      readHoverEl(el);
     }, 450);
   }
 
@@ -526,6 +556,10 @@
     '.grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}',
     '.full{grid-column:1/-1}',
     '.hovergrid{margin-top:10px}',
+    '.toast{pointer-events:none;position:absolute;left:50%;transform:translateX(-50%);',
+    '  bottom:calc(var(--o) + 72px + env(safe-area-inset-bottom, 0px));max-width:calc(100% - 32px);width:max-content;',
+    '  background:#1b1f24;color:#fff;padding:11px 16px;border-radius:12px;font-size:14.5px;line-height:1.35;',
+    '  box-shadow:0 6px 20px rgba(0,0,0,.3);text-align:center}',
     '.tile{display:flex;align-items:center;gap:9px;min-height:50px;padding:8px 10px;text-align:left;',
     '  background:#f2f4f6;border:2px solid transparent;border-radius:11px;font-size:14px;line-height:1.25}',
     '.tile:hover{border-color:#c5ced8}',
@@ -646,6 +680,7 @@
           '<button type="button" data-act="next" aria-label="' + T.next + '">' + G.next + '</button>' +
           '<button type="button" data-act="stop" aria-label="' + T.stop + '">' + G.stop + '</button>' +
         '</div>' +
+        '<div class="toast" role="status" aria-live="polite" hidden></div>' +
         '<div class="sr" role="status" aria-live="polite"></div>' +
       '</div>';
 
@@ -663,6 +698,7 @@
     ui.status = shadow.querySelector('.status');
     ui.jump = shadow.querySelector('.jump');
     ui.mini = shadow.querySelector('.mini');
+    ui.toast = shadow.querySelector('.toast');
     shadow.querySelector('.jumpbox').addEventListener('toggle', function (e) {
       if (e.target.open) buildJumpList();
     });
@@ -695,7 +731,11 @@
       if (path.indexOf(host) === -1) setOpen(false);
     });
     document.addEventListener('click', onDocClickRead, true);
-    if (canHover) document.addEventListener('pointerover', onHoverOver, { passive: true });
+    if (canHover) {
+      document.addEventListener('pointerover', onHoverOver, { passive: true });
+      document.addEventListener('pointerdown', onFirstGesture, true);
+      document.addEventListener('keydown', onFirstGesture, true);
+    }
     window.addEventListener('pointermove', onPointerMove, { passive: true });
     window.addEventListener('pagehide', function () { if (synth) synth.cancel(); });
 
@@ -708,6 +748,19 @@
     ui.fab.setAttribute('aria-expanded', v ? 'true' : 'false');
     if (v) ui.close.focus();
     syncUI();
+  }
+
+  var toastTimer = null;
+  function showToast(msg) {
+    if (!ui.toast) return;
+    ui.toast.textContent = msg;
+    ui.toast.hidden = false;
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(hideToast, 7000);
+  }
+  function hideToast() {
+    clearTimeout(toastTimer);
+    if (ui.toast) ui.toast.hidden = true;
   }
 
   function announce(msg) {
@@ -725,7 +778,7 @@
       if (key === 'invert' && state.invert) state.hc = false;
       if (key === 'hc' && state.hc) state.invert = false;
       if (key === 'clickRead' && !state.clickRead) stopSpeech();
-      if (key === 'hoverRead' && !state.hoverRead) { clearTimeout(hover.timer); hover.el = null; stopSpeech(); }
+      if (key === 'hoverRead' && !state.hoverRead) { clearTimeout(hover.timer); hover.el = null; hover.pending = null; hideToast(); stopSpeech(); }
       apply();
       announce(b.querySelector('.lbl').textContent + ': ' + (state[key] ? T.on : T.off));
       return;
