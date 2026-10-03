@@ -38,6 +38,8 @@
       speech: 'Sesli okuma', play: 'Oku', resume: 'Devam', pause: 'Duraklat', stop: 'Durdur',
       rate: 'Hız', clickRead: 'Dokunduğum yerden oku',
       clickReadHint: 'Açıkken bir paragrafa dokunun; okuma oradan başlar ve devam eder. Bu sırada bağlantılar açılmaz.',
+      hoverRead: 'Üzerine gelince oku',
+      hoverReadHint: 'Açıkken fareyi bir metnin, bağlantının ya da görselin üzerinde kısa bir süre tutun; o kısım okunur. Yeni bir sayfada ilk okumadan önce sayfaya bir kez tıklamanız gerekebilir.',
       prev: 'Önceki paragraf', next: 'Sonraki paragraf', jump: 'Bölüme git', para: 'Paragraf',
       noHeadings: 'Bu sayfada başlık bulunamadı.', player: 'Sesli okuma kontrolleri',
       noSpeech: 'Tarayıcınız sesli okumayı desteklemiyor.',
@@ -56,6 +58,8 @@
       speech: 'Text to speech', play: 'Read', resume: 'Resume', pause: 'Pause', stop: 'Stop',
       rate: 'Speed', clickRead: 'Read from where I tap',
       clickReadHint: 'While on, tap a paragraph to start reading from there. Links are not followed meanwhile.',
+      hoverRead: 'Read on hover',
+      hoverReadHint: 'While on, rest the mouse on a text, link or image for a moment to hear it. On a new page you may need to click once before the first reading.',
       prev: 'Previous paragraph', next: 'Next paragraph', jump: 'Jump to section', para: 'Paragraph',
       noHeadings: 'No headings found on this page.', player: 'Reading controls',
       noSpeech: 'Your browser does not support text to speech.',
@@ -75,13 +79,13 @@
   var DEFAULTS = {
     fs: 0, ls: false, lh: false, ws: false, font: false, links: false, align: 0,
     invert: false, hc: false, gray: false, guide: false, mask: false, cursor: false,
-    noanim: false, rate: 1, clickRead: false
+    noanim: false, rate: 1, clickRead: false, hoverRead: false
   };
   var FS = [1, 1.15, 1.3, 1.5, 1.75];
   var CLASS = {
     ls: 'vab-ls', lh: 'vab-lh', ws: 'vab-ws', font: 'vab-font', links: 'vab-links',
     invert: 'vab-invert', hc: 'vab-hc', gray: 'vab-gray', cursor: 'vab-cursor', noanim: 'vab-noanim',
-    clickRead: 'vab-clickread'
+    clickRead: 'vab-clickread', hoverRead: 'vab-hoverread'
   };
   var ALIGN = ['', 'vab-al-left', 'vab-al-center', 'vab-al-right'];
 
@@ -93,6 +97,7 @@
       s[k] = (k in saved && typeof saved[k] === typeof DEFAULTS[k]) ? saved[k] : DEFAULTS[k];
     }
     s.clickRead = false; // her açılışta kapalı başlasın
+    if (!(window.matchMedia && window.matchMedia('(hover: hover) and (pointer: fine)').matches)) s.hoverRead = false;
     s.fs = Math.max(0, Math.min(FS.length - 1, s.fs | 0));
     s.align = Math.max(0, Math.min(3, s.align | 0));
     s.rate = Math.max(0.5, Math.min(2, Number(s.rate) || 1));
@@ -144,6 +149,7 @@
       'animation-delay:0s!important;animation-iteration-count:1!important;transition-duration:0s!important;' +
       'transition-delay:0s!important;scroll-behavior:auto!important}',
     'html.vab-clickread ' + P + ' :is(' + TEXT + ',a){cursor:help}',
+    'html.vab-hoverread ' + P + ' :is(' + TEXT + ',a,button,img[alt]):hover{outline:2px dotted #d99a00!important;outline-offset:2px!important}',
     '.vab-reading{outline:3px solid #ffbf00!important;outline-offset:2px!important;' +
       'background-color:rgba(255,235,59,.35)!important}'
   ].join('\n');
@@ -413,6 +419,41 @@
     speakFrom(0);
   }
 
+  /* ------------------------------------------------------------------ üzerine gelince oku */
+  var canHover = !!(window.matchMedia && window.matchMedia('(hover: hover) and (pointer: fine)').matches);
+  var hover = { el: null, timer: null, lastRead: null };
+  function hoverTarget(t) {
+    if (!t || !t.closest) return null;
+    var el = t.closest(TEXT + ',a,button,img[alt],[aria-label]');
+    if (!el || el === document.body || el === html) return null;
+    return el;
+  }
+  function hoverText(el) {
+    if (el.tagName === 'IMG') return (el.getAttribute('alt') || '').trim();
+    var t = (el.innerText || '').replace(/\s+/g, ' ').trim();
+    if (!t) t = (el.getAttribute('aria-label') || el.getAttribute('title') || '').trim();
+    return t;
+  }
+  function onHoverOver(e) {
+    if (!state.hoverRead || !synth || e.pointerType === 'touch' || e.pointerType === 'pen') return;
+    var path = e.composedPath ? e.composedPath() : [];
+    if (host && path.indexOf(host) > -1) { clearTimeout(hover.timer); hover.el = null; return; }
+    var el = hoverTarget(e.target);
+    if (el === hover.el) return;
+    hover.el = el;
+    clearTimeout(hover.timer);
+    if (!el) return;
+    hover.timer = setTimeout(function () {
+      if (hover.el !== el) return;
+      if (el === hover.lastRead && speech.active) return; // aynı öğe zaten okunuyor
+      var text = hoverText(el);
+      if (!text) return;
+      hover.lastRead = el;
+      setChunks(chunksFromBlock(el.tagName === 'IMG' ? null : el, text));
+      speakFrom(0);
+    }, 450);
+  }
+
   /* ------------------------------------------------------------------ arayüz */
   var host, shadow, ui = {};
   var open = false;
@@ -445,6 +486,7 @@
     stop: svg('<rect x="3.5" y="3.5" width="9" height="9" rx="1" fill="currentColor"/>'),
     play: svg('<path d="M4.5 2.8l9 5.2-9 5.2z" fill="currentColor"/>'),
     pause: svg('<path d="M5.5 3v10M10.5 3v10" stroke-width="2.6"/>'),
+    hover: svg('<path d="M3 1.5l9.5 7-4 .7 2.4 4.6-2 1-2.4-4.7L3 13z"/><path d="M12.5 11.5c1 .6 1.6 1.6 1.6 2.8M11.3 13.2c.4.3.7.8.7 1.3" />'),
     align: svg('<path d="M2 3.5h12M2 6.5h8M2 9.5h12M2 12.5h8"/>')
   };
 
@@ -483,6 +525,7 @@
     'h3{margin:0 0 10px;font-size:12.5px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:#56606b}',
     '.grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}',
     '.full{grid-column:1/-1}',
+    '.hovergrid{margin-top:10px}',
     '.tile{display:flex;align-items:center;gap:9px;min-height:50px;padding:8px 10px;text-align:left;',
     '  background:#f2f4f6;border:2px solid transparent;border-radius:11px;font-size:14px;line-height:1.25}',
     '.tile:hover{border-color:#c5ced8}',
@@ -563,6 +606,8 @@
                   '<input type="range" min="0.5" max="2" step="0.1"><output>1.0×</output></label>' +
                 '<div class="grid">' + tile('clickRead', T.clickRead, G.click, 'full') + '</div>' +
                 '<p class="hint">' + T.clickReadHint + '</p>' +
+                (canHover ? '<div class="grid hovergrid">' + tile('hoverRead', T.hoverRead, G.hover, 'full') + '</div>' +
+                  '<p class="hint">' + T.hoverReadHint + '</p>' : '') +
                 '<details class="jumpbox"><summary>' + T.jump + '</summary><ul class="jump"></ul></details>' +
               '</div>' +
               '<p class="hint nosupport" hidden>' + T.noSpeech + '</p>' +
@@ -650,6 +695,7 @@
       if (path.indexOf(host) === -1) setOpen(false);
     });
     document.addEventListener('click', onDocClickRead, true);
+    if (canHover) document.addEventListener('pointerover', onHoverOver, { passive: true });
     window.addEventListener('pointermove', onPointerMove, { passive: true });
     window.addEventListener('pagehide', function () { if (synth) synth.cancel(); });
 
@@ -679,6 +725,7 @@
       if (key === 'invert' && state.invert) state.hc = false;
       if (key === 'hc' && state.hc) state.invert = false;
       if (key === 'clickRead' && !state.clickRead) stopSpeech();
+      if (key === 'hoverRead' && !state.hoverRead) { clearTimeout(hover.timer); hover.el = null; stopSpeech(); }
       apply();
       announce(b.querySelector('.lbl').textContent + ': ' + (state[key] ? T.on : T.off));
       return;
