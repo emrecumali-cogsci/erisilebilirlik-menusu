@@ -24,7 +24,7 @@
     position: attr('data-position', 'right') === 'left' ? 'left' : 'right',
     offset: parseInt(attr('data-offset', '20'), 10) || 20,
     content: attr('data-content', 'main, [role="main"], #content, .content, article'),
-    skip: attr('data-skip', 'nav, [role="navigation"], .navbar, #menu, .menu, .dikeyMenu, footer, [aria-hidden="true"], script, style, noscript')
+    skip: attr('data-skip', 'nav, [role="navigation"], .navbar, #menu, .menu, .dikeyMenu, footer, [aria-hidden="true"], script, style, noscript, .flex-control-nav, .flex-direction-nav, .bx-pager, .bx-controls, .owl-dots, .owl-nav, .slick-dots, .carousel-indicators, .a2a_kit, .sr-only')
   };
 
   var KEY = 'vab-a11y-v1';
@@ -152,6 +152,7 @@
       'transition-delay:0s!important;scroll-behavior:auto!important}',
     'html.vab-clickread ' + P + ' :is(' + TEXT + ',a){cursor:help}',
     'html.vab-hoverread ' + P + ' :is(' + TEXT + ',a,button,img[alt]):hover{outline:2px dotted #d99a00!important;outline-offset:2px!important}',
+    '::highlight(vab-reading){background-color:rgba(255,213,0,.55)}',
     '.vab-reading{outline:3px solid #ffbf00!important;outline-offset:2px!important;' +
       'background-color:rgba(255,235,59,.35)!important}'
   ].join('\n');
@@ -228,39 +229,100 @@
     if (buf.trim()) out.push(buf.trim());
     return out;
   }
-  function chunksFromBlock(el, text) {
-    return splitText(text).map(function (t) { return { text: t, el: el }; });
+  function chunksFromBlock(el, text, range) {
+    var key = el || {};
+    return splitText(text).map(function (t) { return { text: t, el: el, range: range || null, key: key }; });
+  }
+  function norm(t) { return (t || '').replace(/\s+/g, ' ').trim(); }
+  var BLOCK_DISPLAY = /^(block|flex|grid|list-item|table|table-row|table-cell|table-caption|flow-root)$/;
+  function isBlockEl(el, cache) {
+    var v = cache.get(el);
+    if (v === undefined) { v = BLOCK_DISPLAY.test(getComputedStyle(el).display); cache.set(el, v); }
+    return v;
+  }
+  function rowText(row) {
+    var cells = row.querySelectorAll('td,th'), parts = [];
+    for (var c = 0; c < cells.length; c++) {
+      var ct = norm(cells[c].innerText);
+      if (ct) parts.push(ct);
+    }
+    return parts.join(', ');
+  }
+  // Sayfayı belge sırasıyla okunacak birimlere ayırır. Paragraf/başlık/liste öğeleri tek birim,
+  // tablo satırları tek birim; <p> içinde olmayan metinler (span + <br> ile yazılmış içerik)
+  // satır satır birim olur ve vurgulama için bir Range taşır.
+  function collectUnits(scope, skipHeader) {
+    var units = [], cache = new WeakMap(), line = null;
+    function flush() {
+      if (!line) return;
+      var t = norm(line.parts.join(''));
+      if (t.length >= 2) {
+        var r = document.createRange();
+        r.setStart(line.first, 0);
+        r.setEnd(line.last, line.last.nodeValue.length);
+        units.push({ text: t, el: null, range: r });
+      }
+      line = null;
+    }
+    function skipSubtree(walker, n) {
+      var last = n;
+      while (last.lastChild) last = last.lastChild;
+      walker.currentNode = last;
+    }
+    var walker = document.createTreeWalker(scope, NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT, {
+      acceptNode: function (n) {
+        if (n.nodeType === 3 || n.tagName === 'BR') return NodeFilter.FILTER_ACCEPT;
+        if (n.id === HOST_ID) return NodeFilter.FILTER_REJECT;
+        try { if (n.matches(CFG.skip)) return NodeFilter.FILTER_REJECT; } catch (e) { /* geçersiz seçici */ }
+        if (skipHeader && n.tagName === 'HEADER') return NodeFilter.FILTER_REJECT;
+        if (!isVisible(n)) return NodeFilter.FILTER_REJECT;
+        return NodeFilter.FILTER_ACCEPT;
+      }
+    });
+    var n;
+    while ((n = walker.nextNode())) {
+      if (n.nodeType === 3) {
+        var v = n.nodeValue;
+        if (!/\S/.test(v)) { if (line) line.parts.push(' '); continue; }
+        var b = n.parentElement;
+        while (b && b !== scope && !isBlockEl(b, cache)) b = b.parentElement;
+        if (line && line.block !== b) flush();
+        if (!line) line = { block: b, parts: [], first: n, last: n };
+        line.parts.push(v);
+        line.last = n;
+        continue;
+      }
+      if (n.tagName === 'BR') { flush(); continue; }
+      if (n.tagName === 'TR') {
+        flush();
+        var rt = rowText(n);
+        if (rt.length >= 2) units.push({ text: rt, el: n, range: null });
+        skipSubtree(walker, n);
+        continue;
+      }
+      if (n.matches(TEXT) && !n.querySelector(TEXT)) {
+        flush();
+        var tt = norm(n.innerText);
+        if (tt.length >= 2) units.push({ text: tt, el: n, range: null });
+        skipSubtree(walker, n);
+        continue;
+      }
+      if (isBlockEl(n, cache)) flush();
+    }
+    flush();
+    return units;
+  }
+  function unitsToChunks(units) {
+    var out = [];
+    for (var i = 0; i < units.length; i++) out = out.concat(chunksFromBlock(units[i].el, units[i].text, units[i].range));
+    return out;
   }
   function collectPageChunks() {
     var scope = null;
     try { scope = document.querySelector(CFG.content); } catch (e) { scope = null; }
     if (!scope) scope = document.body;
 
-    var out = [];
-    var nodes = scope.querySelectorAll(TEXT);
-    for (var i = 0; i < nodes.length; i++) {
-      var n = nodes[i];
-      try { if (n.closest(CFG.skip)) continue; } catch (e) { /* geçersiz seçici */ }
-      if (scope === document.body && n.closest('header')) continue;
-      if (!isVisible(n) || n.querySelector(TEXT)) continue;
-      var t;
-      if (/^T[DH]$/.test(n.tagName) && n.closest('tr')) {
-        // Tablolar satır satır okunur: hücreler virgülle birleştirilir
-        var row = n.closest('tr');
-        if (out.length && out[out.length - 1].el === row) continue;
-        var cells = row.querySelectorAll('td,th'), parts = [];
-        for (var c = 0; c < cells.length; c++) {
-          var ct = (cells[c].innerText || '').replace(/\s+/g, ' ').trim();
-          if (ct) parts.push(ct);
-        }
-        n = row;
-        t = parts.join(', ');
-      } else {
-        t = (n.innerText || '').replace(/\s+/g, ' ').trim();
-      }
-      if (t.length < 2) continue;
-      out = out.concat(chunksFromBlock(n, t));
-    }
+    var out = unitsToChunks(collectUnits(scope, scope === document.body));
     if (!out.length) {
       var raw = (scope.innerText || '').replace(/\s+/g, ' ').trim();
       if (raw) out = chunksFromBlock(null, raw);
@@ -275,8 +337,10 @@
     }
     return null;
   }
+  var HL = !!(window.CSS && CSS.highlights && window.Highlight);
   function clearHighlight() {
     if (speech.el) { speech.el.classList.remove('vab-reading'); speech.el = null; }
+    if (HL && speech.hl) { CSS.highlights.delete('vab-reading'); speech.hl = false; }
   }
   function speakNext(tok) {
     if (tok !== speech.token) return;
@@ -296,7 +360,7 @@
     u.onerror = function (e) {
       if (tok !== speech.token || e.error === 'interrupted' || e.error === 'canceled') return;
       if (e.error === 'not-allowed') {
-        if (state.hoverRead && c.el) hover.pending = c.el;
+        if (state.hoverRead && (c.el || c.range)) hover.pending = { el: c.el, unit: c.el ? null : { text: c.text, range: c.range } };
         stopSpeech();
         showToast(T.needClick);
         return;
@@ -310,6 +374,12 @@
       var r = c.el.getBoundingClientRect();
       if (r.top < 0 || r.bottom > window.innerHeight) {
         c.el.scrollIntoView({ block: 'center', behavior: state.noanim ? 'auto' : 'smooth' });
+      }
+    } else if (c.range && document.contains(c.range.startContainer)) {
+      if (HL) { CSS.highlights.set('vab-reading', new Highlight(c.range)); speech.hl = true; }
+      var rr = c.range.getBoundingClientRect();
+      if (rr.height && (rr.top < 0 || rr.bottom > window.innerHeight)) {
+        window.scrollBy({ top: rr.top - window.innerHeight / 2, behavior: state.noanim ? 'auto' : 'smooth' });
       }
     }
     speech.utt = u; // Chrome, referansı tutulmayan okumayı yarıda kesebiliyor
@@ -336,7 +406,7 @@
     speech.chunks = list;
     speech.starts = [];
     for (var i = 0; i < list.length; i++) {
-      if (i === 0 || !list[i].el || list[i].el !== list[i - 1].el) speech.starts.push(i);
+      if (i === 0 || (list[i].key || list[i]) !== (list[i - 1].key || list[i - 1])) speech.starts.push(i);
     }
   }
   function blockIndexOf(i) {
@@ -417,8 +487,8 @@
     // Dokunulan paragrafı sayfa akışında bul; bulunursa oradan devam ederek oku
     var page = collectPageChunks();
     for (var i = 0; i < page.length; i++) {
-      var el = page[i].el;
-      if (el && (el === block || el.contains(block) || block.contains(el))) {
+      var el = page[i].el, rg = page[i].range;
+      if ((el && (el === block || el.contains(block) || block.contains(el))) || (rg && rg.intersectsNode(t))) {
         setChunks(page);
         speakFrom(i);
         return;
@@ -430,26 +500,41 @@
 
   /* ------------------------------------------------------------------ üzerine gelince oku */
   var canHover = !!(window.matchMedia && window.matchMedia('(hover: hover) and (pointer: fine)').matches);
-  var hover = { el: null, timer: null, lastRead: null, pending: null };
+  var hover = { el: null, timer: null, lastText: null, pending: null };
   function pageActivated() {
     // Tarayıcı, sayfada bir tıklama/tuş olmadan sesli okumaya izin vermez
     return !(navigator.userActivation && !navigator.userActivation.hasBeenActive);
   }
-  function readHoverEl(el) {
-    var text = hoverText(el);
+  // Fare altındaki, <p> içinde olmayan metin satırını bulur
+  function lineAt(target) {
+    if (!target || target.nodeType !== 1 || target === document.body || target === html) return null;
+    var cache = new WeakMap(), b = target;
+    while (b && b !== document.body && !isBlockEl(b, cache)) b = b.parentElement;
+    if (!b || b === document.body || b === html) return null;
+    var units = collectUnits(b, false);
+    for (var i = 0; i < units.length; i++) {
+      var u = units[i];
+      if (u.range && u.range.intersectsNode(target)) return u;
+      if (u.el && (u.el === target || u.el.contains(target))) return u;
+    }
+    return null;
+  }
+  function readHover(h) {
+    var text = h.el ? hoverText(h.el) : h.unit.text;
     if (!text) return;
-    hover.lastRead = el;
-    setChunks(chunksFromBlock(el.tagName === 'IMG' ? null : el, text));
+    hover.lastText = text;
+    if (h.el) setChunks(chunksFromBlock(h.el.tagName === 'IMG' ? null : h.el, text));
+    else setChunks(chunksFromBlock(h.unit.el || null, text, h.unit.range));
     speakFrom(0);
   }
   function onFirstGesture(e) {
     if (!hover.pending) return;
     var path = e.composedPath ? e.composedPath() : [];
     if (host && path.indexOf(host) > -1) return;
-    var el = hover.pending;
+    var h = hover.pending;
     hover.pending = null;
     hideToast();
-    if (state.hoverRead && document.contains(el)) readHoverEl(el); // tıklama anında, izin varken oku
+    if (state.hoverRead) readHover(h); // tıklama anında, izin varken oku
   }
   function hoverTarget(t) {
     if (!t || !t.closest) return null;
@@ -468,19 +553,23 @@
     var path = e.composedPath ? e.composedPath() : [];
     if (host && path.indexOf(host) > -1) { clearTimeout(hover.timer); hover.el = null; return; }
     var el = hoverTarget(e.target);
-    if (el === hover.el) return;
-    hover.el = el;
+    var key = el || (e.target && e.target.nodeType === 1 ? e.target : null);
+    if (key === hover.el) return;
+    hover.el = key;
     clearTimeout(hover.timer);
-    if (!el) return;
+    if (!key) return;
     hover.timer = setTimeout(function () {
-      if (hover.el !== el) return;
-      if (el === hover.lastRead && speech.active) return; // aynı öğe zaten okunuyor
+      if (hover.el !== key) return;
+      var h = el ? { el: el } : { unit: lineAt(key) };
+      if (!h.el && !h.unit) return;
+      var text = h.el ? hoverText(h.el) : h.unit.text;
+      if (!text || (text === hover.lastText && speech.active)) return; // aynı metin zaten okunuyor
       if (!pageActivated()) {
-        hover.pending = el;
+        hover.pending = h;
         showToast(T.needClick);
         return;
       }
-      readHoverEl(el);
+      readHover(h);
     }, 450);
   }
 
