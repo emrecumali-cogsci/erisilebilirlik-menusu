@@ -40,6 +40,7 @@
       clickReadHint: 'Açıkken bir paragrafa dokunun; okuma oradan başlar ve devam eder. Bu sırada bağlantılar açılmaz.',
       hoverRead: 'Üzerine gelince oku',
       needClick: 'Sesli okumayı başlatmak için sayfada bir kez tıklayın.',
+      stopped: 'Sesli okuma durduruldu.',
       hoverReadHint: 'Açıkken fareyi bir metnin, bağlantının ya da görselin üzerinde kısa bir süre tutun; o kısım okunur. Tarayıcılar her yeni sayfada ilk okumadan önce bir tıklama ister.',
       prev: 'Önceki paragraf', next: 'Sonraki paragraf', jump: 'Bölüme git', para: 'Paragraf',
       noHeadings: 'Bu sayfada başlık bulunamadı.', player: 'Sesli okuma kontrolleri',
@@ -61,6 +62,7 @@
       clickReadHint: 'While on, tap a paragraph to start reading from there. Links are not followed meanwhile.',
       hoverRead: 'Read on hover',
       needClick: 'Click once anywhere on the page to enable reading aloud.',
+      stopped: 'Reading stopped.',
       hoverReadHint: 'While on, rest the mouse on a text, link or image for a moment to hear it. Browsers require one click on each new page before the first reading.',
       prev: 'Previous paragraph', next: 'Next paragraph', jump: 'Jump to section', para: 'Paragraph',
       noHeadings: 'No headings found on this page.', player: 'Reading controls',
@@ -468,11 +470,31 @@
   }
   function stopSpeech() {
     speech.token++;
-    if (synth) synth.cancel();
+    if (synth) {
+      if (synth.paused) synth.resume();
+      synth.cancel();
+    }
     speech.active = false;
     speech.paused = false;
     clearHighlight();
     syncUI();
+  }
+  // Kullanıcının "Durdur" ya da Esc ile istediği tam durdurma:
+  // okumayı keser, bekleyen okumaları iptal eder, dokunarak/üzerine gelerek okumayı kapatır.
+  function userStop() {
+    if (typeof hover !== 'undefined') {
+      clearTimeout(hover.timer);
+      hover.el = null;
+      hover.pending = null;
+      hover.lastText = null;
+    }
+    var modesOn = state.hoverRead || state.clickRead;
+    var wasActive = speech.active;
+    state.hoverRead = false;
+    state.clickRead = false;
+    stopSpeech();
+    apply();
+    if (modesOn || wasActive) { showToast(T.stopped); announce(T.stopped); }
   }
   function onDocClickRead(e) {
     if (!state.clickRead || !synth) return;
@@ -528,7 +550,7 @@
     speakFrom(0);
   }
   function onFirstGesture(e) {
-    if (!hover.pending) return;
+    if (!hover.pending || (e.type === 'keydown' && e.key === 'Escape')) return;
     var path = e.composedPath ? e.composedPath() : [];
     if (host && path.indexOf(host) > -1) return;
     var h = hover.pending;
@@ -820,6 +842,10 @@
       if (path.indexOf(host) === -1) setOpen(false);
     });
     document.addEventListener('click', onDocClickRead, true);
+    document.addEventListener('keydown', function (e) {
+      if (e.key !== 'Escape' || open) return;
+      if (speech.active || state.hoverRead || state.clickRead || hover.pending) userStop();
+    });
     if (canHover) {
       document.addEventListener('pointerover', onHoverOver, { passive: true });
       document.addEventListener('pointerdown', onFirstGesture, true);
@@ -876,7 +902,7 @@
       case 'toggle': togglePlay(); break;
       case 'prev': goBlock(-1); break;
       case 'next': goBlock(1); break;
-      case 'stop': stopSpeech(); break;
+      case 'stop': userStop(); break;
       case 'jump':
         if (!jumpChunks.length) break;
         setChunks(jumpChunks);
@@ -958,7 +984,7 @@
       toggles2[t].setAttribute('aria-label', tLabel);
     }
     var stops = shadow.querySelectorAll('[data-act="stop"]');
-    for (var s2 = 0; s2 < stops.length; s2++) stops[s2].disabled = !speech.active;
+    for (var s2 = 0; s2 < stops.length; s2++) stops[s2].disabled = !(speech.active || state.hoverRead || state.clickRead);
     if (speech.active && speech.starts.length > 1) {
       ui.status.textContent = T.para + ' ' + (blockIndexOf(speech.i) + 1) + ' / ' + speech.starts.length;
     } else {
